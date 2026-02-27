@@ -218,14 +218,7 @@ with st.sidebar:
         )
 
         if viz_type == "DFG":
-            dfg_mode = st.radio(
-                "표시 기준",
-                ["빈도 (Frequency)", "성능 (Performance)"],
-                horizontal=True,
-                label_visibility="collapsed",
-            )
-        else:
-            dfg_mode = "빈도 (Frequency)"
+            st.caption("📊 빈도(노드 색상·엣지 두께)와 성능(엣지 색상)을 동시에 표시합니다.")
 
         # ── 5. 실행 버튼 ─────────────────────────────────────────────────
         st.divider()
@@ -338,16 +331,15 @@ else:
     st.subheader(f"🗺️ 프로세스 모델 — {viz_label}")
 
     visualizer = ProcessVisualizer()
-    mode = "performance" if "성능" in (dfg_mode if "dfg_mode" in dir() else "") else "frequency"
 
     with st.spinner("시각화 렌더링 중..."):
         if viz_label == "DFG":
-            html_content = visualizer.render_dfg(
+            html_content = visualizer.render_dfg_combined(
                 miner_result.dfg,
+                miner_result.performance_dfg,
                 miner_result.start_activities,
                 miner_result.end_activities,
-                miner_result.event_log,
-                mode=mode,
+                miner_result.activities_count,
             )
         elif viz_label == "Petri Net":
             html_content = visualizer.render_petri_net(

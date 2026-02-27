@@ -198,6 +198,61 @@ def _model_to_svg(gviz) -> str:
         )
 
 
+# ─── DFG 결합 시각화 헬퍼 함수 ───────────────────────────────────────────────
+def _freq_color(freq: int, max_freq: int) -> str:
+    """빈도 기반 파란색 그라데이션 색상 반환 (hex 문자열)."""
+    if max_freq == 0:
+        return "#D6EAF8"
+    t = freq / max_freq
+    if t < 0.25:
+        return "#D6EAF8"   # 매우 연한 파랑
+    elif t < 0.50:
+        return "#7FB3D3"   # 연한 파랑
+    elif t < 0.75:
+        return "#2E86C1"   # 중간 파랑
+    else:
+        return "#1A5276"   # 진한 남색
+
+
+def _perf_color(t: float) -> str:
+    """
+    성능 정규화 값 (0.0=빠름, 1.0=느림) → hex 색상.
+    green(#27AE60) → yellow(#F1C40F) → red(#E74C3C)
+    """
+    t = max(0.0, min(1.0, t))
+    if t <= 0.5:
+        t2 = t * 2.0
+        r = int(39  + (241 - 39)  * t2)
+        g = int(174 + (196 - 174) * t2)
+        b = int(96  + (15  - 96)  * t2)
+    else:
+        t2 = (t - 0.5) * 2.0
+        r = int(241 + (231 - 241) * t2)
+        g = int(196 + (76  - 196) * t2)
+        b = int(15  + (60  - 15)  * t2)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _is_dark(hex_color: str) -> bool:
+    """색상이 어두운지 판별하여 폰트 색상(흰/검)을 결정합니다."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance < 130
+
+
+def _fmt_dur(seconds: float) -> str:
+    """초 단위 시간을 가독성 있는 형식으로 변환합니다."""
+    if seconds < 60:
+        return f"{seconds:.0f}초"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f}분"
+    elif seconds < 86400:
+        return f"{seconds / 3600:.1f}시간"
+    else:
+        return f"{seconds / 86400:.1f}일"
+
+
 # ─── 공개 API ────────────────────────────────────────────────────────────────
 class ProcessVisualizer:
     """Process Mining 모델을 인터랙티브 HTML로 렌더링합니다."""
@@ -235,6 +290,189 @@ class ProcessVisualizer:
                                  parameters=parameters)
             svg = _model_to_svg(gviz)
             return _wrap_svg(svg, height=height)
+        except Exception as e:
+            return self._error_html(str(e), height)
+
+    def render_dfg_combined(
+        self,
+        dfg: dict,
+        performance_dfg: dict,
+        start_activities: dict,
+        end_activities: dict,
+        activities_count: dict,
+        height: int = 640,
+    ) -> str:
+        """
+        빈도(Frequency) + 성능(Performance)을 결합한 DFG를 한 화면에 렌더링합니다.
+
+        시각적 인코딩
+        ----------
+        · 노드 색상 : 빈도 기반 파란색 그라데이션 (연파랑 → 진남색)
+        · 엣지 두께 : 빈도 비례 (1 ~ 6 px)
+        · 엣지 색상 : 성능 기반 초록 → 노랑 → 빨강 그라데이션
+        · 레이블    : 빈도(N회) + 평균 Inter-Event Time (arc 단위)
+
+        Parameters
+        ----------
+        dfg              : {(src, tgt): frequency}
+        performance_dfg  : {(src, tgt): mean_duration_seconds}
+        start_activities : {activity: frequency}
+        end_activities   : {activity: frequency}
+        activities_count : {activity: event_count}
+        """
+        try:
+            import graphviz
+
+            # ── 정규화 기준값 계산 ──────────────────────────────────────────
+            freq_vals = list(dfg.values())
+            max_freq  = max(freq_vals) if freq_vals else 1
+            min_freq  = min(freq_vals) if freq_vals else 0
+
+            perf_vals = list(performance_dfg.values())
+            max_perf  = max(perf_vals) if perf_vals else 1
+            min_perf  = min(perf_vals) if perf_vals else 0
+
+            act_max = max(activities_count.values()) if activities_count else 1
+
+            # ── Digraph 생성 ────────────────────────────────────────────────
+            dot = graphviz.Digraph(
+                "combined_dfg",
+                graph_attr={
+                    "bgcolor": "white",
+                    "rankdir": "LR",
+                    "fontname": "Helvetica,Arial,sans-serif",
+                    "pad": "0.5",
+                    "nodesep": "0.55",
+                    "ranksep": "0.9",
+                },
+                node_attr={"fontname": "Helvetica,Arial,sans-serif"},
+                edge_attr={"fontname": "Helvetica,Arial,sans-serif"},
+            )
+
+            # ── Start 노드 ──────────────────────────────────────────────────
+            dot.node(
+                "__start__",
+                label="●",
+                shape="circle",
+                style="filled",
+                fillcolor="#27AE60",
+                fontcolor="white",
+                fontsize="14",
+                width="0.5",
+                height="0.5",
+                fixedsize="true",
+            )
+
+            # ── End 노드 ────────────────────────────────────────────────────
+            dot.node(
+                "__end__",
+                label="■",
+                shape="doublecircle",
+                style="filled",
+                fillcolor="#E74C3C",
+                fontcolor="white",
+                fontsize="12",
+                width="0.5",
+                height="0.5",
+                fixedsize="true",
+            )
+
+            # ── 활동 노드 ───────────────────────────────────────────────────
+            all_acts: set = set(activities_count.keys())
+            for src, tgt in dfg:
+                all_acts.add(src)
+                all_acts.add(tgt)
+
+            for act in all_acts:
+                freq = activities_count.get(act, 0)
+
+                # 해당 활동 outgoing arc 성능 평균
+                out_perfs = [
+                    performance_dfg[(s, t)]
+                    for (s, t) in performance_dfg
+                    if s == act
+                ]
+                avg_perf = sum(out_perfs) / len(out_perfs) if out_perfs else None
+
+                fill   = _freq_color(freq, act_max)
+                fcolor = "white" if _is_dark(fill) else "#2C3E50"
+
+                if avg_perf is not None:
+                    lbl = f"{act}\n{freq:,}회 | {_fmt_dur(avg_perf)}"
+                else:
+                    lbl = f"{act}\n{freq:,}회"
+
+                dot.node(
+                    act,
+                    label=lbl,
+                    shape="box",
+                    style="filled,rounded",
+                    fillcolor=fill,
+                    fontcolor=fcolor,
+                    fontsize="10",
+                    margin="0.15,0.1",
+                )
+
+            # ── Start → 시작 활동 ───────────────────────────────────────────
+            for act, cnt in start_activities.items():
+                dot.edge(
+                    "__start__", act,
+                    label=str(cnt),
+                    penwidth="1.5",
+                    color="#27AE60",
+                    fontsize="9",
+                    fontcolor="#27AE60",
+                )
+
+            # ── 종료 활동 → End ─────────────────────────────────────────────
+            for act, cnt in end_activities.items():
+                dot.edge(
+                    act, "__end__",
+                    label=str(cnt),
+                    penwidth="1.5",
+                    color="#E74C3C",
+                    fontsize="9",
+                    fontcolor="#E74C3C",
+                )
+
+            # ── DFG 아크 ────────────────────────────────────────────────────
+            for (src, tgt), freq in dfg.items():
+                perf = performance_dfg.get((src, tgt))
+
+                # 엣지 두께 (1 ~ 6 px)
+                if max_freq > min_freq:
+                    nf = (freq - min_freq) / (max_freq - min_freq)
+                else:
+                    nf = 0.5
+                penwidth = 1.0 + nf * 5.0
+
+                # 엣지 색상 (성능 기반)
+                if perf is not None and max_perf > min_perf:
+                    np_ = (perf - min_perf) / (max_perf - min_perf)
+                    ecolor = _perf_color(np_)
+                elif perf is not None:
+                    ecolor = _perf_color(0.5)
+                else:
+                    ecolor = "#95A5A6"
+
+                # 레이블 (빈도 + 성능)
+                if perf is not None:
+                    lbl = f"{freq:,}\n{_fmt_dur(perf)}"
+                else:
+                    lbl = f"{freq:,}"
+
+                dot.edge(
+                    src, tgt,
+                    label=lbl,
+                    penwidth=f"{penwidth:.1f}",
+                    color=ecolor,
+                    fontsize="9",
+                    fontcolor="#555555",
+                )
+
+            svg = _model_to_svg(dot)
+            return _wrap_svg(svg, height=height)
+
         except Exception as e:
             return self._error_html(str(e), height)
 

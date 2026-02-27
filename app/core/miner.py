@@ -19,6 +19,8 @@ class MinerResult:
     initial_marking: Any                 # Marking
     final_marking: Any                   # Marking
     dfg: dict                            # {(src, tgt): frequency}
+    performance_dfg: dict                # {(src, tgt): mean_duration_seconds}
+    activities_count: dict               # {activity: frequency}
     start_activities: dict               # {activity: frequency}
     end_activities: dict                 # {activity: frequency}
     event_log: Any                       # PM4Py EventLog
@@ -101,6 +103,12 @@ class ProcessMiner:
         """
         dfg, start_acts, end_acts = pm4py.discover_dfg(event_log)
 
+        # Performance DFG: arc별 평균 Inter-Event Time (초 단위)
+        performance_dfg = self._compute_performance_dfg(event_log)
+
+        # 활동별 빈도 계산
+        activities_count = self._compute_activities_count(event_log)
+
         if algorithm == "alpha":
             net, im, fm = self._run_alpha(event_log)
         elif algorithm == "heuristics":
@@ -128,12 +136,67 @@ class ProcessMiner:
             initial_marking=im,
             final_marking=fm,
             dfg=dfg,
+            performance_dfg=performance_dfg,
+            activities_count=activities_count,
             start_activities=start_acts,
             end_activities=end_acts,
             event_log=event_log,
             parameters=params,
             bpmn_model=bpmn_model,
         )
+
+    # ─── Performance DFG 계산 ─────────────────────────────────────────────────
+    def _compute_performance_dfg(self, event_log: Any) -> dict:
+        """
+        Arc별 평균 Inter-Event Time을 계산합니다 (단위: 초).
+
+        단일 타임스탬프 기반:
+          Arc Performance(A→B) = mean( timestamp(B) - timestamp(A) )
+          for all consecutive (A, B) pairs within each case
+        """
+        try:
+            from pm4py.algo.discovery.dfg import algorithm as dfg_algo
+            perf_dfg = dfg_algo.apply(
+                event_log,
+                variant=dfg_algo.Variants.PERFORMANCE,
+            )
+            return perf_dfg  # {(src, tgt): mean_seconds}
+        except Exception:
+            # PM4Py API 실패 시 pandas 기반 직접 계산으로 fallback
+            return self._compute_performance_dfg_pandas(event_log)
+
+    def _compute_performance_dfg_pandas(self, event_log: Any) -> dict:
+        """pandas 기반 Performance DFG 계산 (fallback)."""
+        from collections import defaultdict
+        import statistics
+
+        arc_durations: dict = defaultdict(list)
+
+        for trace in event_log:
+            events = sorted(trace, key=lambda e: e["time:timestamp"])
+            for i in range(1, len(events)):
+                a_act = events[i - 1]["concept:name"]
+                b_act = events[i]["concept:name"]
+                a_ts  = events[i - 1]["time:timestamp"]
+                b_ts  = events[i]["time:timestamp"]
+                duration = (b_ts - a_ts).total_seconds()
+                if duration >= 0:
+                    arc_durations[(a_act, b_act)].append(duration)
+
+        return {
+            arc: statistics.mean(durs)
+            for arc, durs in arc_durations.items()
+            if durs
+        }
+
+    def _compute_activities_count(self, event_log: Any) -> dict:
+        """활동별 발생 빈도를 계산합니다."""
+        counts: dict = {}
+        for trace in event_log:
+            for event in trace:
+                act = event["concept:name"]
+                counts[act] = counts.get(act, 0) + 1
+        return counts
 
     # ─── 개별 알고리즘 ─────────────────────────────────────────────────────────
     def _run_alpha(self, event_log: Any):
