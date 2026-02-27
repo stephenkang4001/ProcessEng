@@ -3,6 +3,8 @@ Process Mining App — 메인 진입점
 단일 페이지 Streamlit 애플리케이션입니다.
 실행: streamlit run app/main.py
 """
+from __future__ import annotations
+
 import os
 import sys
 
